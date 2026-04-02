@@ -263,6 +263,19 @@ class VLLMOmniQwen3TTSBackend(TTSBackend):
             finally:
                 self.omni = None
                 self._ready = False
+
+    async def unload(self) -> None:
+        """
+        Unload the vLLM-Omni engine to free VRAM/RAM.
+
+        Calls close() to properly shut down the vLLM-Omni engine, then
+        calls super().unload() to run GC and clear CUDA caches.
+        """
+        logger.info("Unloading vLLM-Omni engine...")
+        # Close the omni engine (stops internal worker processes)
+        self.close()
+        # Delegate GC + cuda.empty_cache to base class
+        await super().unload()
     
     def get_backend_name(self) -> str:
         """Return the name of this backend."""

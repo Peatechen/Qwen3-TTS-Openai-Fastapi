@@ -206,26 +206,27 @@ def _load_voice_profile(name_or_id: str) -> dict:
 
 
 async def get_tts_backend():
-    """Get the TTS backend instance, initializing if needed.
+    """Get the TTS backend instance, reloading via the auto-unload manager if needed.
 
-    Also integrates with the auto-unload manager:
-    - ensures the model is reloaded if it was unloaded due to idleness
-    - updates the idle activity timestamp after a successful load
+    All loading is routed through ModelAutoUnloadManager.ensure_loaded() which:
+    - holds an asyncio.Lock to prevent thundering-herd re-loads
+    - reloads custom voices after reinitialisation
+    - resets the idle timer once the model is ready
     """
-    from ..backends import get_backend, initialize_backend
+    from ..backends import get_backend
     from ..backends.auto_unload import get_auto_unload_manager
 
     backend = get_backend()
 
-    # Reload model if it was unloaded (auto-unload manager takes care of the lock)
+    # Unified load path: manager handles locking, initialize(), and custom voices.
+    # Do NOT call initialize_backend() directly here — it would bypass the lock
+    # and use a different custom_voices_dir than what the manager was started with.
     manager = get_auto_unload_manager()
     await manager.ensure_loaded()
 
-    # Fallback: direct initialize if manager hasn't been started yet
-    if not backend.is_ready():
-        await initialize_backend()
-
-    # Update idle timer so the model stays loaded while requests keep coming
+    # Update idle timer so the model stays loaded while requests keep coming.
+    # (ensure_loaded() also calls touch() internally after a reload, but we call
+    # it again here to record activity for requests where the model was already ready)
     manager.touch()
 
     return backend

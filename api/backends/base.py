@@ -4,6 +4,7 @@
 Base class for TTS backends.
 """
 
+import gc
 import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, List, Dict, Any
@@ -102,17 +103,26 @@ class TTSBackend(ABC):
         to ``initialize()`` will reload the model weights.
         Subclasses should call ``super().unload()`` or replicate the logic.
         """
+        # Delete the attribute so Python's reference count drops to zero and
+        # the GC can collect the tensor storage (setting to None keeps the
+        # attribute alive and may not release memory if other refs exist).
+        if self.model is not None:
+            del self.model
         self.model = None
         # Reset ready flag via the concrete attribute name used by most backends
         if hasattr(self, "_ready"):
             self._ready = False
-        # Free GPU memory
+        # Force Python GC so cyclic references in PyTorch modules are broken
+        gc.collect()
+        # Free GPU memory caches
         try:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
         except Exception:
             pass
+        logger.info("Backend unloaded: model weights released from memory")
 
     def supports_voice_cloning(self) -> bool:
         """

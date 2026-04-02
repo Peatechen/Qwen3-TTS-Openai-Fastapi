@@ -175,6 +175,10 @@ class ModelAutoUnloadManager:
         If the model was previously unloaded due to idleness, this method
         re-initialises it (with a lock to prevent concurrent re-loads).
         This is a no-op when auto-unload is disabled or the model is ready.
+
+        A 300-second timeout guards against a hung model load blocking the server
+        indefinitely. The idle timer is reset immediately after a successful reload
+        to prevent very short timeouts from triggering another unload right away.
         """
         if self._backend is None:
             return
@@ -189,7 +193,19 @@ class ModelAutoUnloadManager:
                 "Model not ready — reloading before processing request..."
             )
             t0 = time.monotonic()
-            await self._backend.initialize()
+            try:
+                # Bug #3 fix: timeout prevents a hung initialize() from blocking
+                # the event loop (and all pending requests) indefinitely.
+                await asyncio.wait_for(self._backend.initialize(), timeout=300.0)
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Model reload timed out after 300 s — "
+                    "the model could not be loaded in time."
+                )
+                raise RuntimeError(
+                    "Model reload timed out. The server is still running but "
+                    "the model is not available. Check your GPU/CPU resources."
+                )
             # Restore custom voices if any
             if self._custom_voices_dir:
                 try:
@@ -198,6 +214,9 @@ class ModelAutoUnloadManager:
                     logger.warning(f"Custom voice reload failed (non-critical): {e}")
             elapsed = time.monotonic() - t0
             logger.info(f"Model reloaded successfully in {elapsed:.1f}s")
+            # Bug #6 fix: reset the idle timer right after reload so that a very
+            # short MODEL_IDLE_TIMEOUT doesn't immediately trigger another unload.
+            self.touch()
 
     # ------------------------------------------------------------------
     # Internal

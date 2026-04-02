@@ -514,6 +514,52 @@ class OptimizedQwen3TTSBackend(TTSBackend):
     def is_ready(self) -> bool:
         return self._ready
 
+    async def unload(self) -> None:
+        """
+        Unload the optimized backend to free VRAM/RAM.
+
+        Fixes two issues that base.unload() alone cannot handle:
+
+        1. ``_voice_prompt_cache`` holds GPU tensors (voice clone prompts).
+           If not cleared, they occupy VRAM even after ``self.model`` is None.
+
+        2. ``current_model_key`` must be reset to None.
+           ``_ensure_model_loaded()`` guards with::
+
+               if self.current_model_key == model_key and self.model is not None:
+                   return
+
+           After base.unload() sets ``self.model = None``, the condition evaluates
+           ``(key_matches) and (None is not None)`` → False, so the load would
+           proceed. However if the key is *not* reset, a future call that passes
+           the same model_key could hit this guard on a subsequent load while the
+           model hasn't been assigned yet in a race, producing confusing behaviour.
+           Resetting to None makes the invariant explicit and safe.
+        """
+        logger.info("Unloading optimized backend...")
+        # 1. Clear GPU voice-prompt tensors
+        if self._voice_prompt_cache:
+            logger.info(
+                f"Clearing voice prompt cache "
+                f"({len(self._voice_prompt_cache)} entries)"
+            )
+            self._voice_prompt_cache.clear()
+        # 2. Reset model key so _ensure_model_loaded() reloads unconditionally
+        self.current_model_key = None
+        # 3. Clear torch.compile / dynamo caches (they hold compiled module refs)
+        try:
+            import torch._dynamo
+            torch._dynamo.reset()
+        except Exception:
+            pass
+        try:
+            import torch._inductor.codecache as _cc
+            _cc.PyCodeCache.cache_clear()
+        except Exception:
+            pass
+        # 4. Delete model object, run Python GC, and clear CUDA memory caches
+        await super().unload()
+
     def supports_voice_cloning(self) -> bool:
         return True
 

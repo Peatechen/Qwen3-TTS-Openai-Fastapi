@@ -175,6 +175,27 @@ class OpenVINOBackend(TTSBackend):
     def is_ready(self) -> bool:
         """Return whether the backend is initialized and ready."""
         return self._ready
+
+    async def unload(self) -> None:
+        """
+        Unload the OpenVINO backend to free memory.
+
+        ``base.unload()`` only clears ``self.model``.  OpenVINO backends also
+        hold ``self.compiled_model`` (an IE compiled network) and ``self.core``
+        (the OpenVINO Runtime Core).  Both must be released before calling
+        ``super().unload()`` so Python can garbage-collect them.
+        """
+        logger.info("Unloading OpenVINO backend...")
+        # Release the compiled network first (it may hold device resources)
+        if self.compiled_model is not None:
+            del self.compiled_model
+        self.compiled_model = None
+        # Release the OpenVINO Core (frees plugin handles and device contexts)
+        if self.core is not None:
+            del self.core
+        self.core = None
+        # Delegate _ready reset and Python GC to base class
+        await super().unload()
     
     def get_device_info(self) -> Dict[str, Any]:
         """Return device information."""

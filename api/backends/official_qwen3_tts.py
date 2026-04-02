@@ -251,6 +251,31 @@ class OfficialQwen3TTSBackend(TTSBackend):
     def is_ready(self) -> bool:
         """Return whether the backend is initialized and ready."""
         return self._ready
+
+    async def unload(self) -> None:
+        """
+        Unload the official Qwen3-TTS model to free VRAM/RAM.
+
+        Clears torch.compile() dynamo caches (which hold references to the
+        compiled model), clears in-memory custom voice prompt tensors, then
+        delegates GC + CUDA cache clearing to super().unload().
+        """
+        logger.info("Unloading official Qwen3-TTS model...")
+        # Clear in-memory custom voice tensors (they hold GPU tensors)
+        self._custom_voices.clear()
+        # Clear torch.compile dynamo/inductor caches to drop compiled references
+        try:
+            import torch._dynamo
+            torch._dynamo.reset()
+        except Exception:
+            pass
+        try:
+            import torch._inductor.codecache as _codecache
+            _codecache.PyCodeCache.cache_clear()
+        except Exception:
+            pass
+        # Delegate model deletion, GC, and CUDA cache clearing to base class
+        await super().unload()
     
     def get_device_info(self) -> Dict[str, Any]:
         """Return device information."""
