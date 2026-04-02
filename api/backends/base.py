@@ -8,6 +8,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,26 @@ class TTSBackend(ABC):
             Dict with keys: device, gpu_available, gpu_name, vram_total, vram_used
         """
         pass
+
+    async def unload(self) -> None:
+        """
+        Unload the model to free VRAM/RAM.
+
+        Resets the backend to an un-initialised state so that the next call
+        to ``initialize()`` will reload the model weights.
+        Subclasses should call ``super().unload()`` or replicate the logic.
+        """
+        self.model = None
+        # Reset ready flag via the concrete attribute name used by most backends
+        if hasattr(self, "_ready"):
+            self._ready = False
+        # Free GPU memory
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
 
     def supports_voice_cloning(self) -> bool:
         """

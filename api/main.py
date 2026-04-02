@@ -48,6 +48,11 @@ TTS_WARMUP_ON_START = os.getenv("TTS_WARMUP_ON_START", "false").lower() == "true
 # Recommended: 15 s for AMD ROCm; harmless on NVIDIA.  Default 0 = disabled.
 GPU_KEEPALIVE_INTERVAL = int(os.getenv("GPU_KEEPALIVE_INTERVAL", "0"))
 
+# Model auto-unload: release VRAM/RAM when idle, reload on next request.
+# Supports human-readable durations: '2m', '30s', '1h', '0' (disabled).
+_MODEL_IDLE_TIMEOUT_RAW = os.getenv("MODEL_IDLE_TIMEOUT", "0")
+_MODEL_UNLOAD_CHECK_RAW = os.getenv("MODEL_UNLOAD_CHECK_INTERVAL", "30s")
+
 # CORS configuration
 CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*").split(",")
 
@@ -86,10 +91,30 @@ async def lifespan(app: FastAPI):
     if ENABLE_VOICE_STUDIO:
         logger.info(f"Voice Studio: http://{display_host}:{PORT}/voice-studio")
     logger.info(boundary)
-    
+
+    # Parse auto-unload durations
+    from .backends.auto_unload import parse_duration, get_auto_unload_manager
+    try:
+        _idle_timeout = parse_duration(_MODEL_IDLE_TIMEOUT_RAW)
+    except ValueError as exc:
+        logger.warning(f"Invalid MODEL_IDLE_TIMEOUT '{_MODEL_IDLE_TIMEOUT_RAW}': {exc}. Auto-unload disabled.")
+        _idle_timeout = 0
+    try:
+        _check_interval = parse_duration(_MODEL_UNLOAD_CHECK_RAW)
+    except ValueError:
+        _check_interval = 30
+
     # Pre-load the TTS backend
+    _custom_voices_dir = None
+    backend = None
     try:
         from .backends import initialize_backend
+        import os as _os
+        from pathlib import Path as _Path
+        _custom_voices_dir = _os.getenv(
+            "TTS_CUSTOM_VOICES",
+            str(_Path(__file__).resolve().parent.parent / "custom_voices"),
+        )
         logger.info(f"Initializing TTS backend: {TTS_BACKEND}")
         backend = await initialize_backend(warmup=TTS_WARMUP_ON_START)
         logger.info(f"TTS backend '{backend.get_backend_name()}' loaded successfully!")
@@ -106,6 +131,22 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Backend initialization delayed: {e}")
         logger.info("Backend will be loaded on first request.")
+
+    # Start auto-unload manager (works even if backend not yet loaded)
+    if backend is None:
+        from .backends import get_backend
+        try:
+            backend = get_backend()
+        except Exception:
+            pass
+    if backend is not None:
+        _manager = get_auto_unload_manager()
+        _manager.start(
+            backend,
+            timeout_seconds=_idle_timeout,
+            check_interval=_check_interval,
+            custom_voices_dir=_custom_voices_dir,
+        )
 
     # GPU keepalive: periodic small matmul prevents AMD DPM from downclocking the GPU
     # after idle, keeping TTFB consistently low (~0.3 s instead of ~0.85 s after idle).
@@ -146,6 +187,12 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if keepalive_task:
         keepalive_task.cancel()
+    # Stop auto-unload manager
+    try:
+        from .backends.auto_unload import get_auto_unload_manager
+        await get_auto_unload_manager().stop()
+    except Exception:
+        pass
     logger.info("Server shutting down...")
 
 

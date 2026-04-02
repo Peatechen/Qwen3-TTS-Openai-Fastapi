@@ -6,5 +6,12 @@ Backend implementations for Qwen3-TTS.
 
 from .base import TTSBackend
 from .factory import get_backend, initialize_backend
+from .auto_unload import ModelAutoUnloadManager, get_auto_unload_manager
 
-__all__ = ["TTSBackend", "get_backend", "initialize_backend"]
+__all__ = [
+    "TTSBackend",
+    "get_backend",
+    "initialize_backend",
+    "ModelAutoUnloadManager",
+    "get_auto_unload_manager",
+]
